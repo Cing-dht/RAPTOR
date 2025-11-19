@@ -3,9 +3,14 @@ __pycache__
 # ignore temporary files and data directories
 tmp
 data
+logs
+checkpoints
+.venv
 .env
 .env.backup
 .env.dev
 /devs
 kafka
 /tests
+test*.py
+test*.ipynb

@@ -79,3 +79,12 @@ celery
 # Performance & Optimization
 # ========================================
 psutil
+
+# ========================================
+# Additional Libraries
+# ========================================
+lightning
+nvidia_ml_py
+peft
+redis
+tensorboard

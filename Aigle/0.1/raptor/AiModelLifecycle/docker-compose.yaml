@@ -92,6 +92,8 @@ services:
       - ./src:/app/src:ro
       - ./tmp:/app/tmp
       - ./data:/app/data
+      - ./logs:/app/logs
+      - ./checkpoints:/app/checkpoints
       # - model_cache:/app/cache
       # - ./logs:/app/logs
     
@@ -116,6 +118,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1 # 使用 1 個 GPU
+              # count: 1 # 使用 1 個 GPU
+              count: all
               capabilities: [gpu]
               # device_ids: ['2'] # 指定特定 GPU (可選)

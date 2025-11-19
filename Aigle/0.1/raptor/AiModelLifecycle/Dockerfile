@@ -24,14 +24,17 @@ ENV PYTHONUNBUFFERED=1
 # 這確保了與本地開發環境完全相同的依賴版本
 COPY requirements.lock.txt ./
 
+COPY pyproject.toml ./
+
+# --- 複製應用程式程式碼 ---
+# 將 src 目錄下的所有內容複製到工作目錄的 src 子目錄中
+COPY ./src ./src
+
 # 安裝 uv 並使用鎖定文件安裝依賴
 # --system: 安裝到系統 Python（Docker 容器中不需要虛擬環境）
 # --no-cache: 不使用快取，確保全新安裝
 RUN pip install --no-cache-dir uv && \
     uv pip install --system --no-cache -r requirements.lock.txt
-# --- 複製應用程式程式碼 ---
-# 將 src 目錄下的所有內容複製到工作目錄的 src 子目錄中
-COPY ./src ./src
 
 # --- 端口暴露 ---
 # 我們的 FastAPI 應用預計在 8000 端口運行

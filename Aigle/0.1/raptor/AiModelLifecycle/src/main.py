@@ -1,9 +1,11 @@
 # src/main.py
 from fastapi import FastAPI
-from .api import models_api, datasets_api, gpu_api, config_api, inference_api
+from .api import models_api, datasets_api, gpu_api, config_api, inference_api, training_api
 from .core.gpu_manager import gpu_manager
 from .core.model_manager import model_manager  # 確保 model_manager 被初始化
+from .core.training_job_manager import get_job_manager
 
+job_manager = get_job_manager()
 app = FastAPI(
     title="AI 模型生命週期管理平台",
     description="一個用於管理 AI 模型從訓練到部署的綜合性 MLOps 平台，提供完整的模型、數據集、推理和資源管理功能。",
@@ -19,6 +21,7 @@ app.include_router(datasets_api.router)
 app.include_router(inference_api.router)
 app.include_router(gpu_api.router)
 app.include_router(config_api.router)
+app.include_router(training_api.router)
 
 @app.get("/", tags=["系統狀態 (System Status)"])
 def read_root():
@@ -37,7 +40,8 @@ def read_root():
                 "inference": "/inference",
                 "gpu": "/gpu",
                 "config": "/config",
-                "inference_engine": "/inference_engine"
+                "inference_engine": "/inference_engine",
+                "training": "/training"
             },
             "documentation": {
                 "swagger_ui": "/docs",
@@ -66,7 +70,8 @@ def health_check():
                 "model_manager": False,
                 "dataset_manager": False,
                 "inference_manager": False,
-                "config_manager": False
+                "config_manager": False,
+                "training_job_manager": False
             },
             "api_routes": {
                 "models_api": True,
@@ -74,7 +79,8 @@ def health_check():
                 "inference_api": True,
                 "gpu_api": True,
                 "config_api": True,
-                "inference_engine_api": True
+                "inference_engine_api": True,
+                "training_api": True
             }
         }
         
@@ -111,7 +117,13 @@ def health_check():
             health_status["services"]["config_manager"] = config is not None
         except:
             pass
-        
+
+        # 新增：檢查訓練任務管理器
+        try:
+            health_status["services"]["training_job_manager"] = job_manager is not None
+        except:
+            pass
+
         # 確定總體健康狀態
         all_services_healthy = all(health_status["services"].values())
         if not all_services_healthy:
@@ -157,6 +169,17 @@ def get_api_info():
                     "POST /datasets/register - 註冊到MLflow",
                     "POST /datasets/batch_upload - 批量上傳",
                     "GET /datasets/stats - 數據集統計"
+                ]
+            },
+            "training": {
+                "prefix": "/training",
+                "description": "模型訓練任務提交、狀態查詢、取消與刪除",
+                "key_endpoints": [
+                    "POST /training/submit - 提交訓練任務",
+                    "GET /training/status/{job_id} - 查詢任務狀態",
+                    "GET /training/list - 列出所有任務",
+                    "POST /training/cancel/{job_id} - 取消任務",
+                    "DELETE /training/delete/{job_id} - 刪除任務記錄"
                 ]
             },
             "inference": {
@@ -210,7 +233,8 @@ def get_api_info():
         },
         "features": [
             "模型生命週期管理",
-            "數據集版本控制", 
+            "數據集版本控制",
+            "模型訓練管理", 
             "智能推理調度",
             "GPU資源優化",
             "配置中心化管理",
