@@ -45,6 +45,8 @@ audioread==3.1.0
     # via librosa
 billiard==4.2.2
     # via celery
+bitsandbytes==0.48.2
+    # via ai-model-lifecycle
 blinker==1.9.0
     # via flask
 boto3==1.40.63
@@ -272,6 +274,7 @@ numpy==2.2.6 ; python_full_version < '3.11'
     # via
     #   accelerate
     #   ai-model-lifecycle
+    #   bitsandbytes
     #   contourpy
     #   datasets
     #   librosa
@@ -294,6 +297,7 @@ numpy==2.3.4 ; python_full_version >= '3.11'
     # via
     #   accelerate
     #   ai-model-lifecycle
+    #   bitsandbytes
     #   contourpy
     #   datasets
     #   librosa
@@ -376,6 +380,7 @@ opentelemetry-semantic-conventions==0.59b0
 packaging==25.0
     # via
     #   accelerate
+    #   bitsandbytes
     #   datasets
     #   gunicorn
     #   huggingface-hub
@@ -580,6 +585,7 @@ torch==2.9.0
     # via
     #   accelerate
     #   ai-model-lifecycle
+    #   bitsandbytes
     #   lightning
     #   peft
     #   pytorch-lightning

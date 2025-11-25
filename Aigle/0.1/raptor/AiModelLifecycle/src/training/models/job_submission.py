@@ -46,6 +46,12 @@ class TrainingJobSubmission(BaseModel):
                     "use_flash_attn": False,
                     "weight_decay": 0.01,
                     "warmup_ratio": None,
+                    "quantization_config": {
+                        "load_in_4bit": True,
+                        "bnb_4bit_quant_type": "nf4",
+                        "bnb_4bit_use_double_quant": True,
+                        "bnb_4bit_compute_dtype": "bfloat16"
+                    },
                     "lora_config": {
                         "r": 8,
                         "lora_alpha": 16,
@@ -54,11 +60,47 @@ class TrainingJobSubmission(BaseModel):
                         "bias": "none",
                         "modules_to_save": None
                     },
+                    "deepspeed_config": {
+                        "zero_optimization": {
+                            "stage": 3,
+                            "offload_param": {
+                                "device": "cpu",
+                                "pin_memory": True
+                            },
+                            "offload_optimizer": {
+                                "device": "cpu",
+                                "pin_memory": True
+                            },
+                            "stage3_prefetch_bucket_size": "auto",
+                            "stage3_param_persistence_threshold": "auto",
+                            "stage3_max_live_parameters": 1e9,
+                            "stage3_max_reuse_distance": 1e9,
+                            "contiguous_gradients": True,
+                            "overlap_comm": True,
+                            "stage3_gather_16bit_weights_on_model_save": False
+                        },
+                        "fp16": {
+                            "enabled": False
+                        },
+                        "bf16": {
+                            "enabled": True
+                        },
+                        "activation_checkpointing": {
+                            "enabled": True,
+                            "contiguous_memory_optimization": True,
+                            "cpu_checkpointing": False,
+                            "partition_activations": True
+                        }
+                    },
                     "max_epochs": 3,
                     "batch_size": 1,
                     "learning_rate": 2e-5,
                     "gradient_accumulation_steps": 4,
                     "warmup_steps": 100,
+                    "use_8bit_adamw": False,
+                    "adam_beta1": 0.9,
+                    "adam_beta2": 0.999,
+                    "adam_epsilon": 1e-8,
                     "logging_steps": 5,
                     "val_check_interval": 0.5,
                     "experiment_name": "squad_finetune"
@@ -70,7 +112,16 @@ class TrainingJobSubmission(BaseModel):
                     "val_ratio": None,
                     "val_size": 50,
                     "max_length": 2048,
-                    "cache_dir": "tmp/datasets/rajpurkar_squad_v2"
+                    "cache_dir": "tmp/datasets/rajpurkar_squad_v2",
+                    "column_mapping": {
+                        "text": "text",
+                        "messages": "messages",
+                        "context": "context",       
+                        "input": "instruction",     
+                        "output": "output",         
+                    },
+                    "train_split_name": "train",
+                    "val_split_name": None
                 }
             }
         }

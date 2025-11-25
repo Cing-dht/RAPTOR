@@ -14,12 +14,14 @@ from lightning.pytorch.callbacks import (
     Callback
 )
 from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.strategies import DeepSpeedStrategy
+from lightning.pytorch.utilities.deepspeed import convert_zero_checkpoint_to_fp32_state_dict
 import shutil
 
 from .base_trainer import BaseTrainer
 from ..models.trainer_config import TrainerConfig
 from ..models.lightning_module import LightningLLMModule
-from ..callbacks.ttc_progress_callback import TotalStepsLoggerCallback, TTCProgressCallback, TTCEWMAProgressCallback
+from ..callbacks.ttc_progress_callback import TotalStepsLoggerCallback, TTCEWMAProgressCallback
 
 logger = logging.getLogger(__name__) 
 
@@ -45,11 +47,47 @@ class LightningTrainer(BaseTrainer):
         callbacks = self._create_callbacks()
         loggers = self._create_loggers()
 
+        strategy = self.config.strategy
+
+        if self.config.deepspeed_config or self.config.deepspeed_stage:
+            logger.info("Configuring DeepSpeed Strategy...")
+            
+            # 如果提供了完整的字典或 json 路徑
+            if self.config.deepspeed_config:
+                keys_to_remove = [
+                    "gradient_accumulation_steps", 
+                    "train_batch_size", 
+                    "train_micro_batch_size_per_gpu",
+                    "gradient_clipping"
+                ]
+
+                for key in keys_to_remove:
+                    if key in self.config.deepspeed_config:
+                        logger.warning(f"Removing '{key}' from DeepSpeed config to allow Lightning to manage it.")
+                        self.config.deepspeed_config.pop(key)
+
+                strategy = DeepSpeedStrategy(config=self.config.deepspeed_config)
+            
+            # 否則使用簡化參數構建
+            elif self.config.deepspeed_stage:
+                stage = self.config.deepspeed_stage
+                offload_optimizer = self.config.deepspeed_offload_optimizer
+                offload_parameters = self.config.deepspeed_offload_parameters
+                
+                logger.info(f"DeepSpeed Stage: {stage}, Offload Optimizer: {offload_optimizer}")
+
+                strategy = DeepSpeedStrategy(
+                    stage=stage,
+                    offload_optimizer=offload_optimizer,
+                    offload_parameters=offload_parameters,
+                    load_full_weights=True 
+                )
+
         self.trainer = Trainer(
             max_epochs=self.config.max_epochs,
             accelerator=self.config.accelerator,
             devices=self.config.devices,
-            strategy=self.config.strategy,
+            strategy=strategy,
             precision=self.config.precision,
             callbacks=callbacks,
             logger=loggers,
@@ -58,15 +96,15 @@ class LightningTrainer(BaseTrainer):
             log_every_n_steps=self.config.logging_steps,
             val_check_interval=self.config.val_check_interval,
             enable_progress_bar=True,
-            enable_model_summary=True,
+            enable_model_summary=False,
             deterministic=False,
+            # use_distributed_sampler=True 
         )
 
         logger.info(f"LightningTrainer initialized with {self.config.devices} device(s)")
 
     def _initialize_module(self) -> None:
         """Initializes the LightningLLMModule."""
-        # self.module = LightningLLMModule(config=self.config)
         self.module = LightningLLMModule(config=self.config, cancel_token=self.cancel_token)
 
         self.model = self.module.model
@@ -199,42 +237,72 @@ class LightningTrainer(BaseTrainer):
                 ckpt_path=resume_path,
             )
             
-            self.training_state["resume_checkpoint_path"] = None
+            if self.trainer.is_global_zero:
+                self.training_state["resume_checkpoint_path"] = None
 
-            best_path = None
-            last_path = None
+                best_path = None
+                last_path = None
 
-            for cb in self.trainer.callbacks:
-                if isinstance(cb, ModelCheckpoint):
-                    if getattr(cb, "monitor", None) == "val_loss":
-                        best_path = getattr(cb, "best_model_path", None)
-                    if getattr(cb, "save_last", False):
-                        last_path = getattr(cb, "last_model_path", None)
+                for cb in self.trainer.callbacks:
+                    if isinstance(cb, ModelCheckpoint):
+                        if getattr(cb, "monitor", None) == "val_loss":
+                            best_path = getattr(cb, "best_model_path", None)
+                        if getattr(cb, "save_last", False):
+                            last_path = getattr(cb, "last_model_path", None)
 
-            final_model_path_to_load = best_path if best_path else last_path
-            final_output_path = Path(f"{self.config.model_name_or_path}_{self.config.experiment_name}_{self.config.run_name}")
+                final_model_path_to_load = best_path if best_path else last_path
+                final_output_path = Path(f"{self.config.model_name_or_path}_{self.config.experiment_name}_{self.config.run_name}")
 
-            if final_model_path_to_load and Path(final_model_path_to_load).exists():
-                logger.info(f"Loading final model from {final_model_path_to_load}")
-                final_model = LightningLLMModule.load_from_checkpoint(final_model_path_to_load)
-                final_model.save_hf_model(final_output_path)
-                logger.info(f"Best model saved to {final_output_path}")
+                if final_model_path_to_load and Path(final_model_path_to_load).exists():
+                    logger.info(f"Loading final model from {final_model_path_to_load}")
+                    
+                    # 檢查是否為 DeepSpeed Checkpoint (資料夾)
+                    if Path(final_model_path_to_load).is_dir():
+                        logger.info("DeepSpeed checkpoint detected (directory).")
+                        try:
+                            # 轉換 Checkpoint (比較耗時與吃硬碟空間)
+                            temp_state_path = f"{final_model_path_to_load}_consolidated.pt"
+                            logger.info(f"Converting ZeRO checkpoint to single file: {temp_state_path}")
+                            
+                            convert_zero_checkpoint_to_fp32_state_dict(
+                                final_model_path_to_load, 
+                                temp_state_path
+                            )
+                            
+                            # 載入轉換後的權重
+                            final_model = LightningLLMModule.load_from_checkpoint(temp_state_path)
+                            self.module = final_model
+                            logger.info("DeepSpeed checkpoint loaded successfully.")
+                            
+                        except Exception as e:
+                            logger.warning(f"Could not convert/load DeepSpeed checkpoint: {e}")
+                            logger.warning("Falling back to saving current model state (Last Epoch).")
+                            # 如果轉換失敗，直接使用記憶體中目前的模型 (通常是最後一個 Epoch)
+                    else:
+                        # 標準 .ckpt 檔案
+                        final_model = LightningLLMModule.load_from_checkpoint(final_model_path_to_load)
+                        self.module = final_model
+
+                    self.module.save_hf_model(final_output_path)
+                    logger.info(f"Final model saved to {final_output_path}")
+
+                else:
+                    logger.warning("No best or last checkpoint found. Saving current module state instead.")
+                    self.module.save_hf_model(final_output_path)
+
+                metrics = {
+                    "train_loss": float(self.trainer.logged_metrics.get("train_loss_epoch", 0.0)),
+                    "val_loss": float(self.trainer.logged_metrics.get("val_loss", 0.0)),
+                    "current_epoch": self.trainer.current_epoch,
+                    "global_step": self.trainer.global_step,
+                    "final_model_path": str(final_output_path)
+                }
+
+                logger.info(f"Training completed: {metrics}")
+                return metrics
+            
             else:
-                logger.warning("No best or last checkpoint found. Saving current module state instead.")
-                self.module.save_hf_model(final_output_path)
-
-            metrics = {
-                "train_loss": float(self.trainer.logged_metrics.get("train_loss_epoch", 0.0)),
-                "val_loss": float(self.trainer.logged_metrics.get("val_loss", 0.0)),
-                # "best_model_checkpoint_path": best_path,
-                # "last_model_checkpoint_path": last_path,
-                "current_epoch": self.trainer.current_epoch,
-                "global_step": self.trainer.global_step,
-                "final_model_path": str(final_output_path)
-            }
-
-            logger.info(f"Training completed: {metrics}")
-            return metrics
+                return {}
         
         except KeyboardInterrupt:
             logger.info("Training process successfully intercepted cancellation request.")
@@ -245,8 +313,13 @@ class LightningTrainer(BaseTrainer):
             raise
         finally:
             self.training_state["is_training"] = False
-            if Path(self.checkpoint_path).exists():
-                shutil.rmtree(self.checkpoint_path)
+            if self.trainer.is_global_zero and Path(self.checkpoint_path).exists():
+                try:
+                    # ignore_errors=True 防止 FileNotFoundError 導致崩潰
+                    shutil.rmtree(self.checkpoint_path, ignore_errors=True)
+                    logger.info(f"Cleaned up checkpoint directory: {self.checkpoint_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup checkpoint directory: {e}")
 
     def validate(self, eval_dataset: Any) -> Dict[str, float]:
         """

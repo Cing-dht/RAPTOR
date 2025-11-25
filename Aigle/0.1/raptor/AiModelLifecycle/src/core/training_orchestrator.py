@@ -56,12 +56,23 @@ class TrainingOrchestrator:
 
         # 2. Load and Prepare DataLoader
         self.dataset.load_and_split()
-        train_loader = self.dataset.get_dataloader("train", batch_size=self.config.batch_size)
+        train_loader = self.dataset.get_dataloader(
+            "train", 
+            batch_size=self.config.batch_size, 
+            num_workers=self.dataset_config.num_workers,
+            drop_last=True
+        )
         if train_loader is None:
             raise RuntimeError(
                 "Failed to create DataLoader for the 'train' split. Training cannot proceed."
             )
-        val_loader = self.dataset.get_dataloader("validation", batch_size=self.config.batch_size)
+
+        val_loader = self.dataset.get_dataloader(
+            "validation", 
+            batch_size=self.config.batch_size, 
+            shuffle=False, 
+            num_workers=self.dataset_config.num_workers
+        )
 
         # 3. Start Training
         logger.info(f"Starting training with max_epochs={self.config.max_epochs}...")

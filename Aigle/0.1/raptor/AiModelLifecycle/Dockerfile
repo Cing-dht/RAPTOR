@@ -2,12 +2,15 @@
 # Multi-stage build for optimized production deployment
 
 # --- Stage 1: Base Image ---
-# 使用一個官方的、輕量級的 Python 映像檔作為基礎
-FROM python:3.10-slim
+# 使用 NVIDIA PyTorch/CUDA 映像檔以支持 GPU 和 DeepSpeed
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
 
 # Upgrade system packages to address vulnerabilities
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
+    git \
+    libaio-dev \
+    time \
     && rm -rf /var/lib/apt/lists/*
 
 # --- 環境變數 ---
@@ -35,6 +38,13 @@ COPY ./src ./src
 # --no-cache: 不使用快取，確保全新安裝
 RUN pip install --no-cache-dir uv && \
     uv pip install --system --no-cache -r requirements.lock.txt
+
+# --- DeepSpeed 專門編譯步驟 ---
+# 在安裝完其他依賴後，編譯 DeepSpeed 的自定義 C++/CUDA 擴展
+# 這樣可以避免運行時的 JIT 編譯，提高穩定性。
+RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_FUSED_ADAM=1 pip install deepspeed==0.18.2 --no-cache-dir \
+    --global-option="build_ext" --global-option="-j$(nproc)" \
+    && rm -rf /root/.cache/pip
 
 # --- 端口暴露 ---
 # 我們的 FastAPI 應用預計在 8000 端口運行

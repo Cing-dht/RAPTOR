@@ -13,13 +13,14 @@ from redis.cluster import RedisCluster
 import mlflow
 from mlflow.tracking import MlflowClient
 from mlflow.entities import ViewType
-# from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import torch
 import multiprocessing
 from multiprocessing import Process, Pipe
 import shutil
+
 from ..training.models.job_submission import TrainingJobSubmission
 from .training_orchestrator import TrainingOrchestrator
+from .training_worker import run_in_dedicated_process_and_terminate
 from ..training.models.trainer_config import TrainerConfig, DatasetConfig
 from .config import config
 from .gpu_manager import gpu_manager
@@ -28,7 +29,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 multiprocessing.set_start_method('spawn', force=True)
-print("Multiprocessing start method set to 'spawn' for CUDA safety.")
 
 def _redis_key(job_id: str) -> str:
     return f"training_job:{job_id}"
@@ -79,99 +79,6 @@ class TrainingJob:
         job.metrics = data.get("metrics")
         job.model_path = data.get("model_path")
         return job
-
-
-def _sync_orchestrator_run_wrapper(job_config, job_id, cuda_visible_devices, mlflow_uri, redis_url, redis_password):
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
-    logger.info(f"Job {job_id} CUDA_VISIBLE_DEVICES: {os.environ['CUDA_VISIBLE_DEVICES']}")
-
-    trainer_config = TrainerConfig(**job_config["trainer_config"])
-    dataset_config = DatasetConfig(**job_config["dataset_config"])
-    token = CancelToken(job_id, redis_url, redis_password)
-    
-    orchestrator = TrainingOrchestrator(
-        task_type=job_config["task_type"],
-        config=trainer_config,
-        dataset_config=dataset_config,
-        cancel_token=token,
-        mlflow_uri=mlflow_uri,
-    )
-    return orchestrator.run()
-
-
-def process_target(conn, job_config, job_id, cuda_devices, mlflow_uri, redis_url, redis_password):
-    import logging
-    # 設置子進程的日誌級別，以避免重複或混亂
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - (ChildProcess) - %(message)s')
-    
-    try:
-        # 訓練邏輯
-        metrics = _sync_orchestrator_run_wrapper(
-            job_config, job_id, cuda_devices, mlflow_uri, redis_url, redis_password
-        )
-        # 將成功結果發送回父進程
-        conn.send(metrics)
-    except Exception as e:
-        # 將失敗結果發送回父進程
-        conn.send({
-            "status": "failed",
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        })
-    finally:
-        conn.close()
-
-def _run_in_dedicated_process_and_terminate(
-    job_config, job_id, cuda_devices, mlflow_uri, redis_url, redis_password
-) -> Dict[str, Any]:
-    """
-    啟動一個獨立進程來執行訓練任務，等待其完成，
-    並確保該進程終止（如果需要）。
-    """
-    
-    # 創建一個管道用於通信：(parent_conn, child_conn)
-    parent_conn, child_conn = Pipe()
-    process = Process(
-        target=process_target, 
-        args=(
-            child_conn,
-            job_config,
-            job_id,
-            cuda_devices,
-            mlflow_uri,
-            redis_url,
-            redis_password
-        )
-    )
-    
-    logger.info(f"Job {job_id}: Starting dedicated training process...")
-    process.start()
-    
-    try:
-        # 等待子進程完成並接收結果
-        if parent_conn.poll(timeout=None):  # 阻塞等待直到收到結果
-            result = parent_conn.recv()
-            if isinstance(result, dict) and result.get("status") == "failed":
-                raise RuntimeError(f"Child process failed: {result.get('error')}\n{result.get('traceback')}")
-        else:
-            # 理論上不應該發生，因為我們阻塞等待
-            raise RuntimeError("Dedicated process failed to return result via pipe.")
-            
-    finally:
-        parent_conn.close()
-        
-        # 這是最關鍵的步驟：確保進程終止並釋放資源
-        if process.is_alive():
-            logger.warning(f"Job {job_id} process {process.pid} is still alive after receiving result. Terminating...")
-            process.terminate() # 強制終止
-            process.join(timeout=5) # 給予 5 秒終止時間
-            if process.is_alive():
-                logger.error(f"Job {job_id} process {process.pid} failed to terminate.")
-
-        logger.info(f"Job {job_id} dedicated process {process.pid} joined/terminated.")
-        
-    return result
 
 
 class TrainingJobManager:
@@ -518,7 +425,7 @@ class TrainingJobManager:
             metrics = await loop.run_in_executor(
                 # self.process_pool,
                 None,
-                _run_in_dedicated_process_and_terminate, 
+                run_in_dedicated_process_and_terminate, 
                 job.config, 
                 job_id,
                 cuda_devices,
@@ -640,7 +547,7 @@ class TrainingJobManager:
             # 以 Run 快照的 metrics 作為基礎，它包含 val_loss 等聚合指標
             progress_data = dict(run.data.metrics) 
             progress_data["mlflow_run_id"] = run_id
-            progress_data["total_steps"] = int(run.data.params["total_steps"])
+            progress_data["total_steps"] = int(run.data.params.get("total_steps", "-1"))
             if progress_data.get("progress_percentage"):
                 progress_data["progress_percentage"] = round(progress_data["progress_percentage"], 2)
             else:

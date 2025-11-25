@@ -3,9 +3,11 @@ from datetime import timedelta
 import logging
 from typing import Dict, Any, List, Tuple
 
+
 import lightning as L
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import MLFlowLogger
+from lightning.pytorch.utilities import rank_zero_only
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,8 @@ class TotalStepsLoggerCallback(Callback):
     def __init__(self, training_state: Dict[str, Any]):
         super().__init__()
         self.training_state = training_state
-
+    
+    @rank_zero_only
     def on_fit_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Called when fit begins."""
         
@@ -52,6 +55,7 @@ class TTCProgressCallback(Callback):
         # 只保留最近 N 個點來計算平滑速率
         self.history_window_size = 10 
 
+    @rank_zero_only
     def on_train_batch_end(self, trainer: L.Trainer, pl_module: L.LightningModule, outputs, batch, batch_idx: int) -> None:
         # 僅在達到 log_every_n_steps 時執行計算
         if trainer.global_step == 0 or (trainer.global_step % trainer.log_every_n_steps) != 0:
@@ -93,8 +97,8 @@ class TTCProgressCallback(Callback):
             progress_percentage = (current_step / total_steps) * 100
             
             # 6. 記錄進度到 Lightning Log (會同步到 MLflow/TensorBoard)
-            pl_module.log("estimated_time_remaining_seconds", time_remaining_seconds, on_step=True, on_epoch=False, rank_zero_only=True)
-            pl_module.log("progress_percentage", progress_percentage, on_step=True, on_epoch=False, rank_zero_only=True)
+            pl_module.log("estimated_time_remaining_seconds", time_remaining_seconds, on_step=True, on_epoch=False)
+            pl_module.log("progress_percentage", progress_percentage, on_step=True, on_epoch=False)
             
             # 7. 更新 Trainer 外部的 State (供外部 API 查詢)
             # self.training_state["estimated_time_remaining_seconds"] = time_remaining_seconds
@@ -102,79 +106,6 @@ class TTCProgressCallback(Callback):
             
             logger.debug(f"TTC: {time_remaining_human} (Progress: {progress_percentage:.2f}%)")
     
-
-# class TTCEWMAProgressCallback(L.Callback):
-#     """
-#     Callback to calculate and log Estimated Time to Completion (TTC) with EWMA smoothing.
-#     """
-#     def __init__(self, training_state: Dict[str, Any], alpha: float = 0.3, min_history_steps: int = 10, max_history_steps: int = 100):
-#         super().__init__()
-#         self.training_state = training_state
-#         self.alpha = alpha  # EWMA smoothing factor (0~1)
-#         self.min_history_steps = min_history_steps
-#         self.max_history_steps = max_history_steps
-#         self.history: List[Tuple[int, float]] = []
-#         self.ewma_rate: float = None
-
-#     def on_train_batch_end(
-#         self, trainer: L.Trainer, pl_module: L.LightningModule, outputs, batch, batch_idx: int
-#     ) -> None:
-#         # 只在達到 log_every_n_steps 時計算
-#         if trainer.global_step == 0 or (trainer.global_step % trainer.log_every_n_steps) != 0:
-#             return
-
-#         current_time = time.time()
-#         current_step = trainer.global_step
-
-#         # 記錄歷史數據
-#         self.history.append((current_step, current_time))
-#         if len(self.history) > self.max_history_steps:  # 防止無限增長
-#             self.history.pop(0)
-
-#         # 至少需要 min_history_steps 才計算
-#         if len(self.history) < self.min_history_steps:
-#             return
-
-#         # 取最早的數據點
-#         start_step, start_time = self.history[0]
-#         step_diff = current_step - start_step
-#         time_diff = current_time - start_time
-
-#         if time_diff <= 0 or step_diff <= 0:
-#             return
-
-#         # 1. 計算 instant rate
-#         instant_rate = step_diff / time_diff
-
-#         # 2. EWMA 平滑速率
-#         if self.ewma_rate is None:
-#             self.ewma_rate = instant_rate
-#         else:
-#             self.ewma_rate = self.alpha * instant_rate + (1 - self.alpha) * self.ewma_rate
-
-#         # 3. 計算剩餘時間
-#         total_steps = self.training_state.get("total_steps")
-#         if total_steps is None or total_steps <= 0:
-#             return
-
-#         remaining_steps = total_steps - current_step
-#         if remaining_steps <= 0:
-#             return
-
-#         time_remaining_seconds = int(remaining_steps / self.ewma_rate)
-#         time_remaining_human = str(timedelta(seconds=time_remaining_seconds))
-#         progress_percentage = (current_step / total_steps) * 100
-
-#         # 4. Log 到 Lightning / MLflow
-#         pl_module.log("estimated_time_remaining_seconds", time_remaining_seconds, on_step=True, on_epoch=False, rank_zero_only=True)
-#         pl_module.log("progress_percentage", progress_percentage, on_step=True, on_epoch=False, rank_zero_only=True)
-
-#         # 5. 更新外部 training_state
-#         # self.training_state["estimated_time_remaining_seconds"] = time_remaining_seconds
-#         # self.training_state["progress_percentage"] = progress_percentage
-
-#         logger.debug(f"TTC: {time_remaining_human} | Progress: {progress_percentage:.2f}%")
-
 
 class TTCEWMAProgressCallback(L.Callback):
     def __init__(self, training_state, alpha=0.3, min_steps=10):
@@ -186,6 +117,7 @@ class TTCEWMAProgressCallback(L.Callback):
         self.val_ewma_time = None
         self.val_start_time = None
 
+    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         current_time = time.time()
         current_step = trainer.global_step
@@ -216,12 +148,14 @@ class TTCEWMAProgressCallback(L.Callback):
         ttc_seconds = remaining_steps * avg_train_step_time + remaining_val_time
         progress = (current_step / total_steps) * 100
 
-        pl_module.log("estimated_time_remaining_seconds", int(ttc_seconds), on_step=True)
-        pl_module.log("progress_percentage", progress, on_step=True)
+        pl_module.log("estimated_time_remaining_seconds", int(ttc_seconds), on_step=True, on_epoch=False)
+        pl_module.log("progress_percentage", progress, on_step=True, on_epoch=False)
 
+    @rank_zero_only
     def on_validation_start(self, trainer, pl_module):
         self.val_start_time = time.time()
 
+    @rank_zero_only
     def on_validation_end(self, trainer, pl_module):
         if self.val_start_time is None:
             return

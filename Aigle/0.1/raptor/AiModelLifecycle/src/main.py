@@ -1,11 +1,15 @@
 # src/main.py
 from fastapi import FastAPI
+import multiprocessing
+
 from .api import models_api, datasets_api, gpu_api, config_api, inference_api, training_api
 from .core.gpu_manager import gpu_manager
 from .core.model_manager import model_manager  # 確保 model_manager 被初始化
-from .core.training_job_manager import get_job_manager
 
-job_manager = get_job_manager()
+
+multiprocessing.set_start_method('forkserver', force=True)
+print("Multiprocessing start method set to 'forkserver' for CUDA safety.")
+
 app = FastAPI(
     title="AI 模型生命週期管理平台",
     description="一個用於管理 AI 模型從訓練到部署的綜合性 MLOps 平台，提供完整的模型、數據集、推理和資源管理功能。",
@@ -120,6 +124,8 @@ def health_check():
 
         # 新增：檢查訓練任務管理器
         try:
+            from .core.training_job_manager import get_job_manager
+            job_manager = get_job_manager()
             health_status["services"]["training_job_manager"] = job_manager is not None
         except:
             pass

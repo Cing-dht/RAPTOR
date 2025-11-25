@@ -25,11 +25,13 @@ class BaseTrainer(ABC):
         }
 
     @abstractmethod
-    def train(self,
-              model: Any,
-              train_dataset: Any, # Expects DataLoader or DataModule
-              eval_dataset: Optional[Any] = None, # Expects DataLoader or DataModule
-              callbacks: Optional[List[Callable]] = None) -> Dict[str, Any]:
+    def train(
+        self,
+        model: Any,
+        train_dataset: Any, # Expects DataLoader or DataModule
+        eval_dataset: Optional[Any] = None, # Expects DataLoader or DataModule
+        callbacks: Optional[List[Callable]] = None
+    ) -> Dict[str, Any]:
         """
         Execute training loop.
         """

@@ -1,16 +1,18 @@
-from fastapi import APIRouter, HTTPException, Query, Path
+from fastapi import APIRouter, HTTPException, Query, Path, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Union
 
 from ..core.training_job_manager import get_job_manager
 from ..training.models.job_submission import TrainingJobSubmission
 
-job_manager = get_job_manager()
 
 router = APIRouter(
     prefix="/training",
     tags=["AI 模型訓練任務管理 (Training Job Management)"]
 )
+
+def get_manager():
+    return get_job_manager()
 
 # --- Pydantic Models for Requests and Responses ---
 
@@ -27,27 +29,51 @@ class JobStatusResponse(BaseModel):
 # --- API Endpoints ---
 
 @router.post("/submit", response_model=JobStatusResponse, summary="提交一個新的訓練任務")
-def submit_training_job_endpoint(submission: TrainingJobSubmission):
+def submit_training_job_endpoint(
+    submission: TrainingJobSubmission,
+    job_manager = Depends(get_manager)
+):
     """
     提交一個新的 AI 模型訓練任務到排程器。
-    
-    **支援的 Instruction Dataset 格式：**
-    
-    | question 欄位來源        | answer 欄位來源    | context 欄位來源 |
-    | ----------------------- | ----------------- | ------------ |
-    | `question`              | `answers.text[0]` | `context`    |
-    | `instruction` / `input` | `output`          | `input`      |
-    | `question`              | `response`        | `context`    |
-    | `question`              | `answer`          | (none)       |
 
-    **Prompt 格式：**
-    - system: {system_prompt}
-    - user: 'Context: {context} Question: {question}' or 'Question: {question}'
-    - assistant: {answer}
+    ---
 
-    **返回值：**
-    - job_id: 提交後分配的唯一任務 ID
-    - status: 任務狀態 (應為 'queued' 或 'running')
+    對於Instruction Tuning / SFT 任務，系統支援以多種欄位組合提供Instruction Dataset，所有欄位會依照
+    `column_mapping` 自動轉換為標準化的 Chat Messages 格式，以便用於
+    Instruction Tuning / SFT 訓練。
+
+    **支援欄位（依照 column_mapping 定義）：**
+    - `messages`：完整多輪對話（若存在將直接使用）
+    - `reasoning`：模型思考過程（CoT）
+    - `context`：上下文
+    - `input`：指令、問題或提示文字（如 prompt、instruction、question）
+    - `output`：模型期望回答（如 response、answer）
+
+    **單輪資料自動轉換格式：**
+    若資料未提供 `messages` 欄位，系統會自動組成以下對話：
+    - system: 系統的 `default_system_prompt` 或資料內的 `system_prompt`
+    - user:
+        - 若有 `context` → `Context: {context} Question/Instruction: {input}`
+        - 否則 → `{input}`
+    - assistant:
+        - 若提供 `reasoning` → 會合併為:
+
+            <think>
+            {reasoning}
+            </think>
+
+            {output}
+
+        - 否則直接為 `{output}`
+
+    **多輪訊息（messages）格式要求：**
+    - 每個項目需包含：`{"role": "system|user|assistant", "content": str}`
+    - 會自動清洗空內容或無效 role
+    - 最後一個 assistant 回覆會自動補上 EOS token（若 tokenizer 有定義）
+
+    ---
+
+    對於 Text Generation 任務，一樣可透過 `column_mapping` 指定 `text` 欄位來提供純文字生成資料。
     """
     try:
         job_id = job_manager.submit_job(submission)
@@ -64,7 +90,10 @@ def submit_training_job_endpoint(submission: TrainingJobSubmission):
 
 
 @router.get("/status/{job_id}", response_model=JobStatusResponse, summary="獲取特定任務的詳細狀態")
-async def get_job_status_endpoint(job_id: str = Path(..., description="要查詢的任務 ID")):
+async def get_job_status_endpoint(
+    job_id: str = Path(..., description="要查詢的任務 ID"),
+    job_manager = Depends(get_manager)
+):
     """
     查詢指定 ID 訓練任務的當前狀態、分配的 GPU 和結果。
     """
@@ -88,7 +117,8 @@ async def get_job_status_endpoint(job_id: str = Path(..., description="要查詢
 
 @router.get("/list", response_model=List[JobStatusResponse], summary="列出所有訓練任務")
 def list_all_jobs_endpoint(
-    status: Optional[str] = Query(None, description="按狀態過濾 (queued, running, completed, failed, cancelled)")
+    status: Optional[str] = Query(None, description="按狀態過濾 (queued, running, completed, failed, cancelled)"),
+    job_manager = Depends(get_manager)
 ):
     """
     列出所有已提交的訓練任務，可選按狀態過濾。
@@ -117,7 +147,10 @@ def list_all_jobs_endpoint(
 
 
 @router.post("/cancel/{job_id}", summary="取消一個正在運行或排隊中的訓練任務")
-def cancel_job_endpoint(job_id: str = Path(..., description="要取消的任務 ID")):
+def cancel_job_endpoint(
+    job_id: str = Path(..., description="要取消的任務 ID"),
+    job_manager = Depends(get_manager)
+):
     """
     嘗試取消指定的訓練任務。
     
@@ -142,7 +175,8 @@ def cancel_job_endpoint(job_id: str = Path(..., description="要取消的任務 
 @router.delete("/delete/{job_id}", summary="刪除任務記錄")
 def delete_job_endpoint(
     job_id: str = Path(..., description="要刪除的任務 ID"),
-    force: bool = Query(False, description="如果任務仍在運行或排隊中，是否強制取消並刪除")
+    force: bool = Query(False, description="如果任務仍在運行或排隊中，是否強制取消並刪除"),
+    job_manager = Depends(get_manager)
 ):
     """
     從 Redis 和備份中刪除任務記錄和模型。
