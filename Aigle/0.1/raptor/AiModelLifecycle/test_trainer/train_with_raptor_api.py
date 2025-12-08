@@ -1,5 +1,5 @@
 """
-Train Qwen3-4B using RAPTOR Framework API
+Train LLM using RAPTOR Framework API
 
 This script implements the training workflow using RAPTOR's REST API
 instead of direct transformers/peft calls.
@@ -12,14 +12,13 @@ TensorBoard: http://192.168.157.167:6006/
 
 import requests
 import time
-import json
 
 # Configuration
 BASE_URL = "http://192.168.157.167:8009"
 
-# MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"  # Qwen3 has tokenization issues with RAPTOR
-# MODEL_NAME = "Qwen/Qwen3-4B"
-MODEL_NAME = "Qwen/Qwen3-1.7B"
+# MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+MODEL_NAME = "Qwen/Qwen3-4B"
+# MODEL_NAME = "Qwen/Qwen3-1.7B"
 # MODEL_NAME = "google/gemma-3-270m-it"
 # MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 
@@ -31,8 +30,8 @@ DATASET_NAME = "yentinglin/TaiwanChat"  # Has standard 'train' split
 EXPERIMENT_NAME = "qwen3-chatbot"
 # EXPERIMENT_NAME = "gemma3-chatbot"
 
-MAX_SEQ_LENGTH = 512
-VRAM_BUDGET_GB = 15
+MAX_SEQ_LENGTH = 1024
+VRAM_BUDGET_GB = 25
 
 
 def download_model():
@@ -153,7 +152,7 @@ def submit_training_job(model_path: str, dataset_path: str):
             # "val_split_name": "validation",   # 若無指定，則會根據val_ratio或val_size自動切割train_split。（優先級：val_ratio > val_size）
             "column_mapping": {
                 "messages": "messages",    # 用於instruction，完整對話欄位，格式如 [{"role": "user", "content": "prompt"}, {"role": "assistant", "content": "response"}]。
-                # "context": "context",			# 用於instruction，如SQuAD 或 RAG 任務的上下文/文章欄位。
+                # "context": "context",			# 用於instruction，如文章或背景資訊，模型在回答前會先讀這段內容。
                 # "reasoning": "reasoning",     # 用於instruction，如模型思考過程。
                 # "input": "prompt",			# 用於instruction，如提問或指令。
                 # "output": "response",			# 用於instruction，如模型期望的回答。
